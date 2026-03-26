@@ -5,6 +5,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 from supabase import create_client
 
+st.set_page_config(
+    page_title="조선소 인력 구조 분석",
+    page_icon="⚓",
+    layout="wide",               # 화면 전체 너비 사용
+    initial_sidebar_state="expanded",
+)
+
 # 커스텀 CSS — 카드 여백, 폰트 약간 조정
 st.markdown("""
 <style>
