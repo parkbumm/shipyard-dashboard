@@ -1,0 +1,240 @@
+# pages/2_인력수급계획.py
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from supabase import create_client
+
+st.set_page_config(page_title="인력 수급 계획", page_icon="📊", layout="wide")
+
+@st.cache_resource
+def get_supabase():
+    return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
+
+supabase = get_supabase()
+
+@st.cache_data(ttl=300)
+def load_planning_data():
+    gap      = pd.DataFrame(supabase.table("gap_analysis").select("*").execute().data)
+    plans    = pd.DataFrame(supabase.table("production_plans").select("*").execute().data)
+    products = pd.DataFrame(supabase.table("products").select("*").execute().data)
+    demand   = pd.DataFrame(supabase.table("workforce_demand").select("*").execute().data)
+    supply   = pd.DataFrame(supabase.table("workforce_supply").select("*").execute().data)
+    jobs     = pd.DataFrame(supabase.table("jobs").select("*").execute().data)
+
+    plans = plans.merge(products[["id","product_name","product_type"]], 
+                        left_on="product_id", right_on="id")
+    demand = demand.merge(jobs[["id","job_name","department"]], 
+                          left_on="job_id", right_on="id")
+    return gap, plans, products, demand, supply, jobs
+
+with st.spinner("인력 계획 데이터 로딩 중..."):
+    gap, plans, products, demand, supply, jobs = load_planning_data()
+
+# ── 사이드바 ────────────────────────────────────────────────────────
+st.sidebar.title("📊 인력 수급 계획 필터")
+sel_scenario = st.sidebar.selectbox(
+    "시나리오", ["BASE", "OPTIMISTIC", "PESSIMISTIC"],
+    format_func=lambda x: {"BASE":"기준","OPTIMISTIC":"낙관","PESSIMISTIC":"비관"}[x]
+)
+sel_years = st.sidebar.slider("분석 연도 범위", 2025, 2030, (2025, 2030))
+
+st.title("🚢 전략적 인력 수급 계획 대시보드")
+st.caption(f"시나리오: **{sel_scenario}** | 분석 기간: {sel_years[0]}~{sel_years[1]}년")
+st.divider()
+
+# ── 탭 구성 ─────────────────────────────────────────────────────────
+tab1, tab2, tab3, tab4 = st.tabs([
+    "📦 제품별 생산계획",
+    "⚙️ 직무별 공수 분석",
+    "⚠️ 인력 과부족 현황",
+    "🔮 미래 인력 로드맵",
+])
+
+# ── TAB 1: 제품별 생산계획 ───────────────────────────────────────────
+with tab1:
+    st.subheader("제품별 연도별 수주·생산 계획")
+
+    plan_filtered = plans[
+        (plans["scenario"] == sel_scenario) &
+        (plans["plan_year"].between(*sel_years))
+    ]
+
+    # 선종별 연도별 척수 히트맵
+    pivot_plan = plan_filtered.pivot_table(
+        index="product_name", columns="plan_year",
+        values="planned_ships", aggfunc="sum"
+    ).fillna(0)
+
+    fig = px.imshow(
+        pivot_plan, text_auto=".1f",
+        color_continuous_scale="Blues",
+        labels={"color": "계획 척수"},
+        aspect="auto", height=320,
+    )
+    fig.update_layout(margin=dict(t=10))
+    st.plotly_chart(fig, use_container_width=True)
+
+    # 연도별 총 생산량 추이 (선종별 누적 막대)
+    st.subheader("연도별 수주량 추이 (선종별 누적)")
+    fig2 = px.bar(
+        plan_filtered, x="plan_year", y="planned_ships",
+        color="product_name", barmode="stack",
+        text_auto=".1f",
+        labels={"plan_year":"연도","planned_ships":"척수","product_name":"선종"},
+        height=380,
+    )
+    fig2.update_layout(legend=dict(orientation="h", y=-0.3))
+    st.plotly_chart(fig2, use_container_width=True)
+
+# ── TAB 2: 직무별 공수 분석 ─────────────────────────────────────────
+with tab2:
+    st.subheader("직무별 연간 필요 공수 (맨아워)")
+
+    demand_filtered = demand[
+        (demand["scenario"] == sel_scenario) &
+        (demand["plan_year"].between(*sel_years))
+    ]
+
+    # 직무별 연도별 필요 인원 추이
+    fig3 = px.line(
+        demand_filtered, x="plan_year", y="required_headcount",
+        color="job_name", markers=True,
+        labels={"plan_year":"연도","required_headcount":"필요 인원(명)","job_name":"직무"},
+        height=400,
+    )
+    fig3.update_layout(legend=dict(orientation="h", y=-0.3))
+    st.plotly_chart(fig3, use_container_width=True)
+
+    # 직무별 총 공수 막대
+    st.subheader("직무별 누적 총 공수 (맨아워)")
+    total_mh = demand_filtered.groupby("job_name")["total_manhours"].sum().reset_index()
+    fig4 = px.bar(
+        total_mh.sort_values("total_manhours", ascending=True),
+        x="total_manhours", y="job_name", orientation="h",
+        text_auto=",d",
+        labels={"total_manhours":"총 공수(맨아워)","job_name":"직무"},
+        height=360,
+    )
+    st.plotly_chart(fig4, use_container_width=True)
+
+# ── TAB 3: 인력 과부족 현황 ─────────────────────────────────────────
+with tab3:
+    st.subheader("직무별 인력 과부족 현황 (수요 - 공급)")
+    st.caption("+ 부족 / - 과잉 | BASE 시나리오 기준")
+
+    gap_filtered = gap[gap["year"].between(*sel_years)]
+
+    # 연도별 직무별 GAP 히트맵
+    gap_pivot = gap_filtered.pivot_table(
+        index="job_name", columns="year", values="gap"
+    )
+    fig5 = px.imshow(
+        gap_pivot, text_auto=".1f",
+        color_continuous_scale="RdYlGn_r",   # 빨강=부족, 초록=과잉
+        color_continuous_midpoint=0,
+        labels={"color":"과부족(명)"},
+        aspect="auto", height=380,
+    )
+    st.plotly_chart(fig5, use_container_width=True)
+
+    # 연도 선택하여 상세 보기
+    sel_year_detail = st.select_slider("상세 조회 연도", options=list(range(*sel_years, 1)) + [sel_years[1]])
+    gap_year = gap_filtered[gap_filtered["year"] == sel_year_detail].copy()
+    gap_year = gap_year.sort_values("gap", ascending=False)
+
+    colors = gap_year["gap"].apply(
+        lambda x: "#F44336" if x > 5 else "#FF9800" if x > 0 else "#4CAF50" if x > -5 else "#1976D2"
+    )
+    fig6 = go.Figure(go.Bar(
+        x=gap_year["gap"], y=gap_year["job_name"],
+        orientation="h",
+        marker_color=colors,
+        text=gap_year["gap"].apply(lambda x: f"{x:+.1f}명"),
+        textposition="outside",
+    ))
+    fig6.add_vline(x=0, line_width=1.5, line_color="gray")
+    fig6.update_layout(
+        height=380, title=f"{sel_year_detail}년 직무별 과부족",
+        xaxis_title="과부족 인원(명)", yaxis_title="",
+        margin=dict(t=40),
+    )
+    st.plotly_chart(fig6, use_container_width=True)
+
+    # 심각 부족 직무 경보
+    critical = gap_year[gap_year["gap_status"] == "심각 부족"]
+    if not critical.empty:
+        st.error(f"🚨 {sel_year_detail}년 심각 부족 직무: " +
+                 ", ".join(critical["job_name"].tolist()))
+
+# ── TAB 4: 미래 인력 로드맵 ─────────────────────────────────────────
+with tab4:
+    st.subheader("직무별 인력 수요·공급 비교 (연도별 추이)")
+
+    sel_job = st.selectbox("직무 선택", sorted(jobs["job_name"].tolist()))
+    job_id  = jobs[jobs["job_name"] == sel_job]["id"].values[0]
+
+    dem_j = demand[
+        (demand["job_name"] == sel_job) &
+        (demand["scenario"] == sel_scenario) &
+        (demand["plan_year"].between(*sel_years))
+    ].sort_values("plan_year")
+
+    sup_j = supply[
+        (supply["job_id"] == job_id) &
+        (supply["supply_year"].between(*sel_years))
+    ].sort_values("supply_year")
+
+    fig7 = go.Figure()
+    fig7.add_trace(go.Scatter(
+        x=dem_j["plan_year"], y=dem_j["required_headcount"],
+        name="수요 (필요 인원)", mode="lines+markers",
+        line=dict(color="#F44336", width=2.5),
+        marker=dict(size=8),
+    ))
+    fig7.add_trace(go.Scatter(
+        x=sup_j["supply_year"], y=sup_j["net_supply"],
+        name="공급 (순 가용 인원)", mode="lines+markers",
+        line=dict(color="#1976D2", width=2.5, dash="dot"),
+        marker=dict(size=8),
+    ))
+    fig7.add_trace(go.Scatter(
+        x=dem_j["plan_year"],
+        y=dem_j["required_headcount"] - sup_j["net_supply"].values,
+        name="과부족 GAP", mode="lines",
+        fill="tozeroy",
+        line=dict(color="#FF9800", width=1),
+        fillcolor="rgba(255,152,0,0.15)",
+    ))
+    fig7.update_layout(
+        height=420,
+        title=f"{sel_job} — 수요 vs 공급 ({sel_scenario} 시나리오)",
+        xaxis_title="연도", yaxis_title="인원(명)",
+        legend=dict(orientation="h", y=-0.2),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig7, use_container_width=True)
+
+    # 시나리오 비교
+    st.subheader(f"{sel_job} — 시나리오별 수요 비교")
+    dem_all = demand[
+        (demand["job_name"] == sel_job) &
+        (demand["plan_year"].between(*sel_years))
+    ]
+    fig8 = px.line(
+        dem_all, x="plan_year", y="required_headcount",
+        color="scenario",
+        color_discrete_map={"BASE":"#1976D2","OPTIMISTIC":"#4CAF50","PESSIMISTIC":"#F44336"},
+        markers=True,
+        labels={"plan_year":"연도","required_headcount":"필요 인원(명)","scenario":"시나리오"},
+        height=340,
+    )
+    # 현재 공급 기준선 추가
+    if not sup_j.empty:
+        fig8.add_hline(
+            y=sup_j["net_supply"].mean(),
+            line_dash="dash", line_color="gray",
+            annotation_text="현재 평균 공급",
+            annotation_position="right",
+        )
+    st.plotly_chart(fig8, use_container_width=True)
