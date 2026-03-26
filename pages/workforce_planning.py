@@ -172,48 +172,63 @@ with tab4:
     st.subheader("직무별 인력 수요·공급 비교 (연도별 추이)")
 
     sel_job = st.selectbox("직무 선택", sorted(jobs["job_name"].tolist()))
-    job_id  = jobs[jobs["job_name"] == sel_job]["id"].values[0]
+    job_id  = int(jobs[jobs["job_name"] == sel_job]["id"].values[0])
 
     dem_j = demand[
         (demand["job_name"] == sel_job) &
         (demand["scenario"] == sel_scenario) &
         (demand["plan_year"].between(*sel_years))
-    ].sort_values("plan_year")
+    ].sort_values("plan_year").reset_index(drop=True)
 
     sup_j = supply[
         (supply["job_id"] == job_id) &
         (supply["supply_year"].between(*sel_years))
-    ].sort_values("supply_year")
+    ].sort_values("supply_year").reset_index(drop=True)
 
-    fig7 = go.Figure()
-    fig7.add_trace(go.Scatter(
-        x=dem_j["plan_year"], y=dem_j["required_headcount"],
-        name="수요 (필요 인원)", mode="lines+markers",
-        line=dict(color="#F44336", width=2.5),
-        marker=dict(size=8),
-    ))
-    fig7.add_trace(go.Scatter(
-        x=sup_j["supply_year"], y=sup_j["net_supply"],
-        name="공급 (순 가용 인원)", mode="lines+markers",
-        line=dict(color="#1976D2", width=2.5, dash="dot"),
-        marker=dict(size=8),
-    ))
-    fig7.add_trace(go.Scatter(
-        x=dem_j["plan_year"],
-        y=dem_j["required_headcount"] - sup_j["net_supply"].values,
-        name="과부족 GAP", mode="lines",
-        fill="tozeroy",
-        line=dict(color="#FF9800", width=1),
-        fillcolor="rgba(255,152,0,0.15)",
-    ))
-    fig7.update_layout(
-        height=420,
-        title=f"{sel_job} — 수요 vs 공급 ({sel_scenario} 시나리오)",
-        xaxis_title="연도", yaxis_title="인원(명)",
-        legend=dict(orientation="h", y=-0.2),
-        hovermode="x unified",
+    # ✅ 핵심 수정: .values 대신 연도 기준으로 merge 후 계산
+    merged_j = dem_j[["plan_year", "required_headcount"]].merge(
+        sup_j[["supply_year", "net_supply"]],
+        left_on="plan_year",
+        right_on="supply_year",
+        how="inner"   # 양쪽에 연도가 모두 있는 행만 사용
     )
-    st.plotly_chart(fig7, use_container_width=True)
+
+    if merged_j.empty:
+        st.warning("선택한 직무의 수요·공급 데이터가 일치하는 연도가 없습니다.")
+    else:
+        merged_j["gap"] = merged_j["required_headcount"] - merged_j["net_supply"]
+
+        fig7 = go.Figure()
+        fig7.add_trace(go.Scatter(
+            x=merged_j["plan_year"],
+            y=merged_j["required_headcount"],
+            name="수요 (필요 인원)", mode="lines+markers",
+            line=dict(color="#F44336", width=2.5),
+            marker=dict(size=8),
+        ))
+        fig7.add_trace(go.Scatter(
+            x=merged_j["plan_year"],
+            y=merged_j["net_supply"],
+            name="공급 (순 가용 인원)", mode="lines+markers",
+            line=dict(color="#1976D2", width=2.5, dash="dot"),
+            marker=dict(size=8),
+        ))
+        fig7.add_trace(go.Scatter(
+            x=merged_j["plan_year"],
+            y=merged_j["gap"],
+            name="과부족 GAP", mode="lines",
+            fill="tozeroy",
+            line=dict(color="#FF9800", width=1),
+            fillcolor="rgba(255,152,0,0.15)",
+        ))
+        fig7.update_layout(
+            height=420,
+            title=f"{sel_job} — 수요 vs 공급 ({sel_scenario} 시나리오)",
+            xaxis_title="연도", yaxis_title="인원(명)",
+            legend=dict(orientation="h", y=-0.2),
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig7, use_container_width=True)
 
     # 시나리오 비교
     st.subheader(f"{sel_job} — 시나리오별 수요 비교")
@@ -224,12 +239,19 @@ with tab4:
     fig8 = px.line(
         dem_all, x="plan_year", y="required_headcount",
         color="scenario",
-        color_discrete_map={"BASE":"#1976D2","OPTIMISTIC":"#4CAF50","PESSIMISTIC":"#F44336"},
+        color_discrete_map={
+            "BASE": "#1976D2",
+            "OPTIMISTIC": "#4CAF50",
+            "PESSIMISTIC": "#F44336"
+        },
         markers=True,
-        labels={"plan_year":"연도","required_headcount":"필요 인원(명)","scenario":"시나리오"},
+        labels={
+            "plan_year": "연도",
+            "required_headcount": "필요 인원(명)",
+            "scenario": "시나리오"
+        },
         height=340,
     )
-    # 현재 공급 기준선 추가
     if not sup_j.empty:
         fig8.add_hline(
             y=sup_j["net_supply"].mean(),
