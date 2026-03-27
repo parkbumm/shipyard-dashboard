@@ -49,19 +49,24 @@ st.sidebar.divider()
 st.sidebar.markdown("#### 🚢 수주/생산 계획 조정")
 st.sidebar.caption("척수를 직접 수정하면 차트에 즉시 반영됩니다.")
 
-year_list    = list(range(sel_years[0], sel_years[1] + 1))
-prod_list    = sorted(products["product_name"].tolist())
+year_list = list(range(sel_years[0], sel_years[1] + 1))
+prod_list = sorted(products["product_name"].tolist())
 
-# 선택된 시나리오의 기존 계획값을 초기값으로 로드
+# ✅ merge 결과 확인 후 product_name 컬럼 사용
 plan_base = plans[plans["scenario"] == sel_scenario].copy()
-plan_base = plan_base.merge(
-    products[["id", "product_name"]], left_on="product_id", right_on="id"
-)
 
-# session_state로 편집값 관리 (새로고침해도 유지)
+# plans DataFrame에 product_name이 이미 있는지 확인 후 merge
+if "product_name" not in plan_base.columns:
+    plan_base = plan_base.merge(
+        products[["id", "product_name", "product_type"]],
+        left_on="product_id",
+        right_on="id",
+        how="left"
+    )
+
+# session_state로 편집값 관리
 state_key = f"custom_plan_{sel_scenario}"
 if state_key not in st.session_state:
-    # 초기: DB 값으로 채우기
     init_dict = {}
     for yr in range(2025, 2031):
         for pname in prod_list:
@@ -69,12 +74,14 @@ if state_key not in st.session_state:
                 (plan_base["plan_year"] == yr) &
                 (plan_base["product_name"] == pname)
             ]
-            init_dict[(yr, pname)] = float(row["planned_ships"].values[0]) if not row.empty else 0.0
+            init_dict[(yr, pname)] = (
+                float(row["planned_ships"].values[0]) if not row.empty else 0.0
+            )
     st.session_state[state_key] = init_dict
 
 edited = st.session_state[state_key].copy()
 
-# 연도 탭으로 구분하여 선종별 척수 입력
+# 연도 선택 후 선종별 척수 입력
 sidebar_year = st.sidebar.selectbox(
     "조회/편집 연도", year_list, key="sidebar_year"
 )
@@ -105,7 +112,7 @@ if st.sidebar.button("↺ 원래 계획값으로 초기화"):
 
 st.sidebar.divider()
 
-# ── 편집값 → DataFrame 변환 (이후 탭에서 plan_filtered 대신 사용) ──
+# ── 편집값 → DataFrame 변환 ──────────────────────────────────────────
 custom_rows = []
 for (yr, pname), ships in st.session_state[state_key].items():
     pid_row = products[products["product_name"] == pname]
@@ -122,12 +129,10 @@ for (yr, pname), ships in st.session_state[state_key].items():
 
 custom_plans_df = pd.DataFrame(custom_rows)
 
-# 연도 범위 필터 적용
 plan_filtered = custom_plans_df[
     custom_plans_df["plan_year"].between(*sel_years)
 ].copy()
 
-# 연도별 합계 (사이드바 하단 요약)
 yearly_total = (
     plan_filtered.groupby("plan_year")["planned_ships"]
     .sum()
