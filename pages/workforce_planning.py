@@ -242,15 +242,6 @@ yearly_total = (
     .rename(columns={"planned_ships": "total_ships"})
 )
 
-# ── 사이드바 하단: 연도별 합계 요약 ─────────────────────────────────
-st.sidebar.markdown("#### 📋 연도별 총 수주 요약")
-cols = st.sidebar.columns(2)
-for i, row in yearly_total.iterrows():
-    cols[i % 2].metric(
-        label=f"{int(row['plan_year'])}년",
-        value=f"{row['total_ships']:.1f} 척",
-    )
-
 # ── 탭 구성 ─────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
     "📦 제품별 생산계획",
