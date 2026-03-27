@@ -60,32 +60,94 @@ with tab1:
         (plans["plan_year"].between(*sel_years))
     ]
 
+    # 연도별 합계 계산
+    yearly_total = (
+        plan_filtered.groupby("plan_year")["planned_ships"]
+        .sum()
+        .reset_index()
+        .rename(columns={"planned_ships": "total_ships"})
+    )
+
     # 선종별 연도별 척수 히트맵
     pivot_plan = plan_filtered.pivot_table(
         index="product_name", columns="plan_year",
         values="planned_ships", aggfunc="sum"
     ).fillna(0)
 
+    # ✅ 합계 행 추가
+    pivot_plan.loc["── 합계 ──"] = pivot_plan.sum()
+
     fig = px.imshow(
         pivot_plan, text_auto=".1f",
         color_continuous_scale="Blues",
         labels={"color": "계획 척수"},
-        aspect="auto", height=320,
+        aspect="auto", height=360,
+    )
+    # 합계 행 강조 (마지막 행 배경색 다르게)
+    fig.add_hline(
+        y=len(pivot_plan) - 1.5,   # 합계 행 위 구분선
+        line_width=2, line_color="steelblue", line_dash="dot",
     )
     fig.update_layout(margin=dict(t=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    # 연도별 총 생산량 추이 (선종별 누적 막대)
+    # 연도별 수주량 추이 (선종별 누적 막대 + 합계 라인)
     st.subheader("연도별 수주량 추이 (선종별 누적)")
+
     fig2 = px.bar(
         plan_filtered, x="plan_year", y="planned_ships",
         color="product_name", barmode="stack",
         text_auto=".1f",
-        labels={"plan_year":"연도","planned_ships":"척수","product_name":"선종"},
-        height=380,
+        labels={
+            "plan_year": "연도",
+            "planned_ships": "척수",
+            "product_name": "선종"
+        },
+        height=420,
     )
-    fig2.update_layout(legend=dict(orientation="h", y=-0.3))
+
+    # ✅ 합계 수치를 막대 위에 표시
+    fig2.add_trace(go.Scatter(
+        x=yearly_total["plan_year"],
+        y=yearly_total["total_ships"],
+        mode="lines+markers+text",
+        name="연도 합계",
+        text=yearly_total["total_ships"].apply(lambda x: f"<b>{x:.1f}척</b>"),
+        textposition="top center",
+        textfont=dict(size=13, color="#1565C0"),
+        line=dict(color="#1565C0", width=2, dash="dot"),
+        marker=dict(size=9, color="#1565C0"),
+    ))
+
+    fig2.update_layout(
+        legend=dict(orientation="h", y=-0.25),
+        yaxis_title="척수",
+        xaxis=dict(tickmode="linear", dtick=1),
+    )
     st.plotly_chart(fig2, use_container_width=True)
+
+    # ✅ 연도별 합계 요약 테이블
+    st.subheader("연도별 합계 요약")
+
+    summary = plan_filtered.pivot_table(
+        index="product_name",
+        columns="plan_year",
+        values="planned_ships",
+        aggfunc="sum"
+    ).fillna(0)
+
+    # 합계 행/열 추가
+    summary.loc["합계"] = summary.sum()
+    summary["전체합계"] = summary.sum(axis=1)
+
+    # 소수점 1자리 포맷으로 표시
+    st.dataframe(
+        summary.style.format("{:.1f}")
+               .background_gradient(cmap="Blues", subset=summary.columns[:-1])
+               .highlight_between(subset=["전체합계"], color="#D6EAF8"),
+        use_container_width=True,
+        height=320,
+    )
 
 # ── TAB 2: 직무별 공수 분석 ─────────────────────────────────────────
 with tab2:
