@@ -34,37 +34,32 @@ with st.spinner("인력 계획 데이터 로딩 중..."):
 # ── 사이드바 ────────────────────────────────────────────────────────
 st.sidebar.title("📊 인력 수급 계획 필터")
 
-# ── 기본 필터 ────────────────────────────────────────────────────────
 st.sidebar.markdown("#### 기본 설정")
 sel_scenario = st.sidebar.selectbox(
     "시나리오",
     ["BASE", "OPTIMISTIC", "PESSIMISTIC"],
-    format_func=lambda x: {"BASE": "기준", "OPTIMISTIC": "낙관", "PESSIMISTIC": "비관"}[x]
+    format_func=lambda x: {
+        "BASE": "기준", "OPTIMISTIC": "낙관", "PESSIMISTIC": "비관"
+    }[x],
 )
 sel_years = st.sidebar.slider("분석 연도 범위", 2025, 2030, (2025, 2030))
 
 st.sidebar.divider()
-
-# ── 생산계획 편집 ────────────────────────────────────────────────────
 st.sidebar.markdown("#### 🚢 수주/생산 계획 조정")
-st.sidebar.caption("척수를 직접 수정하면 차트에 즉시 반영됩니다.")
+st.sidebar.caption("슬라이더로 척수 조정 후 저장하면 모든 집계에 반영됩니다.")
 
 year_list = list(range(sel_years[0], sel_years[1] + 1))
 prod_list = sorted(products["product_name"].tolist())
 
-# ✅ merge 결과 확인 후 product_name 컬럼 사용
+# ── plan_base 구성 ───────────────────────────────────────────────────
 plan_base = plans[plans["scenario"] == sel_scenario].copy()
-
-# plans DataFrame에 product_name이 이미 있는지 확인 후 merge
 if "product_name" not in plan_base.columns:
     plan_base = plan_base.merge(
         products[["id", "product_name", "product_type"]],
-        left_on="product_id",
-        right_on="id",
-        how="left"
+        left_on="product_id", right_on="id", how="left"
     )
 
-# session_state로 편집값 관리
+# ── session_state 초기화 ─────────────────────────────────────────────
 state_key = f"custom_plan_{sel_scenario}"
 if state_key not in st.session_state:
     init_dict = {}
@@ -81,38 +76,146 @@ if state_key not in st.session_state:
 
 edited = st.session_state[state_key].copy()
 
-# 연도 선택 후 선종별 척수 입력
+# ── 연도 선택 + 슬라이더 입력 ───────────────────────────────────────
 sidebar_year = st.sidebar.selectbox(
-    "조회/편집 연도", year_list, key="sidebar_year"
+    "편집 연도", year_list, key="sidebar_year"
 )
-
 st.sidebar.markdown(f"**{sidebar_year}년 선종별 계획 척수**")
 
 for pname in prod_list:
-    short_name = pname[:10] + "…" if len(pname) > 10 else pname
-    val = edited.get((sidebar_year, pname), 0.0)
-    new_val = st.sidebar.number_input(
+    short_name = pname[:12] + "…" if len(pname) > 12 else pname
+    cur_val = edited.get((sidebar_year, pname), 0.0)
+    new_val = st.sidebar.slider(
         short_name,
         min_value=0.0,
         max_value=20.0,
-        value=float(val),
+        value=cur_val,
         step=0.5,
-        format="%.1f",
-        key=f"plan_{sidebar_year}_{pname}",
+        format="%.1f척",
+        key=f"slider_{sidebar_year}_{pname}",
     )
     edited[(sidebar_year, pname)] = new_val
 
 st.session_state[state_key] = edited
 
-# 초기화 버튼
-if st.sidebar.button("↺ 원래 계획값으로 초기화"):
-    if state_key in st.session_state:
-        del st.session_state[state_key]
-    st.rerun()
+# ── 저장 함수 ────────────────────────────────────────────────────────
+def save_plans_and_recalc(edited_dict, scenario, supabase_client):
+    """
+    1) production_plans upsert
+    2) workforce_demand 재계산 후 upsert
+    """
+    WORKING_DAYS = 250
+    DAILY_HOURS  = 8.0
+    ANNUAL_HOURS = WORKING_DAYS * DAILY_HOURS  # 2000
+
+    # ── 1. production_plans upsert ───────────────────────────────────
+    upsert_plans = []
+    for (yr, pname), ships in edited_dict.items():
+        pid_row = products[products["product_name"] == pname]
+        if pid_row.empty:
+            continue
+        upsert_plans.append({
+            "plan_year":     yr,
+            "product_id":    int(pid_row["id"].values[0]),
+            "planned_ships": ships,
+            "scenario":      scenario,
+        })
+
+    supabase_client.table("production_plans").upsert(
+        upsert_plans,
+        on_conflict="plan_year,product_id,scenario"
+    ).execute()
+
+    # ── 2. workforce_demand 재계산 ───────────────────────────────────
+    # 공수 표준 테이블 로드
+    mh_df = pd.DataFrame(
+        supabase_client.table("product_job_manhours").select("*").execute().data
+    )
+
+    # 편집된 계획을 DataFrame으로 변환
+    plan_rows = []
+    for (yr, pname), ships in edited_dict.items():
+        pid_row = products[products["product_name"] == pname]
+        if pid_row.empty:
+            continue
+        plan_rows.append({
+            "plan_year":  yr,
+            "product_id": int(pid_row["id"].values[0]),
+            "planned_ships": ships,
+        })
+    plan_edited_df = pd.DataFrame(plan_rows)
+
+    demand_upsert = []
+    for year in range(2025, 2031):
+        p_yr = plan_edited_df[plan_edited_df["plan_year"] == year]
+        ship_dict = dict(zip(p_yr["product_id"], p_yr["planned_ships"]))
+
+        mh_calc = mh_df.copy()
+        mh_calc["ships"]    = mh_calc["product_id"].map(ship_dict).fillna(0)
+        mh_calc["total_mh"] = mh_calc["manhours_per_ship"] * mh_calc["ships"]
+
+        job_demand = (
+            mh_calc.groupby("job_id")["total_mh"]
+            .sum()
+            .reset_index()
+            .rename(columns={"total_mh": "total_manhours"})
+        )
+
+        for _, row in job_demand.iterrows():
+            total_mh = int(row["total_manhours"])
+            req_hc   = round(total_mh / ANNUAL_HOURS, 1)
+            demand_upsert.append({
+                "plan_year":         year,
+                "job_id":            int(row["job_id"]),
+                "scenario":          scenario,
+                "total_manhours":    total_mh,
+                "required_headcount": req_hc,
+                "working_days":      WORKING_DAYS,
+                "daily_hours":       DAILY_HOURS,
+            })
+
+    # 50건씩 upsert
+    for i in range(0, len(demand_upsert), 50):
+        supabase_client.table("workforce_demand").upsert(
+            demand_upsert[i:i+50],
+            on_conflict="plan_year,job_id,scenario"
+        ).execute()
+
+    return len(upsert_plans), len(demand_upsert)
+
+# ── 저장 / 초기화 버튼 ──────────────────────────────────────────────
+col_save, col_reset = st.sidebar.columns(2)
+
+with col_save:
+    if st.button("💾 저장", use_container_width=True):
+        with st.spinner("저장 및 집계 중..."):
+            try:
+                n_plans, n_demand = save_plans_and_recalc(
+                    st.session_state[state_key],
+                    sel_scenario,
+                    supabase,
+                )
+                # 캐시 초기화 → 최신 데이터 리로드
+                load_planning_data.clear()
+                st.sidebar.success(
+                    f"✅ 저장 완료\n"
+                    f"- 생산계획 {n_plans}건\n"
+                    f"- 수요 재계산 {n_demand}건"
+                )
+                st.rerun()
+            except Exception as e:
+                st.sidebar.error(f"❌ 저장 실패: {e}")
+
+with col_reset:
+    if st.button("↺ 초기화", use_container_width=True):
+        if state_key in st.session_state:
+            del st.session_state[state_key]
+        load_planning_data.clear()
+        st.rerun()
 
 st.sidebar.divider()
 
-# ── 편집값 → DataFrame 변환 ──────────────────────────────────────────
+# ── 편집값 → plan_filtered DataFrame (탭에서 사용) ───────────────────
 custom_rows = []
 for (yr, pname), ships in st.session_state[state_key].items():
     pid_row = products[products["product_name"] == pname]
@@ -128,7 +231,6 @@ for (yr, pname), ships in st.session_state[state_key].items():
     })
 
 custom_plans_df = pd.DataFrame(custom_rows)
-
 plan_filtered = custom_plans_df[
     custom_plans_df["plan_year"].between(*sel_years)
 ].copy()
@@ -139,6 +241,15 @@ yearly_total = (
     .reset_index()
     .rename(columns={"planned_ships": "total_ships"})
 )
+
+# ── 사이드바 하단: 연도별 합계 요약 ─────────────────────────────────
+st.sidebar.markdown("#### 📋 연도별 총 수주 요약")
+cols = st.sidebar.columns(2)
+for i, row in yearly_total.iterrows():
+    cols[i % 2].metric(
+        label=f"{int(row['plan_year'])}년",
+        value=f"{row['total_ships']:.1f} 척",
+    )
 
 # ── 탭 구성 ─────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
