@@ -33,15 +33,114 @@ with st.spinner("인력 계획 데이터 로딩 중..."):
 
 # ── 사이드바 ────────────────────────────────────────────────────────
 st.sidebar.title("📊 인력 수급 계획 필터")
+
+# ── 기본 필터 ────────────────────────────────────────────────────────
+st.sidebar.markdown("#### 기본 설정")
 sel_scenario = st.sidebar.selectbox(
-    "시나리오", ["BASE", "OPTIMISTIC", "PESSIMISTIC"],
-    format_func=lambda x: {"BASE":"기준","OPTIMISTIC":"낙관","PESSIMISTIC":"비관"}[x]
+    "시나리오",
+    ["BASE", "OPTIMISTIC", "PESSIMISTIC"],
+    format_func=lambda x: {"BASE": "기준", "OPTIMISTIC": "낙관", "PESSIMISTIC": "비관"}[x]
 )
 sel_years = st.sidebar.slider("분석 연도 범위", 2025, 2030, (2025, 2030))
 
-st.title("🚢 전략적 인력 수급 계획 대시보드")
-st.caption(f"시나리오: **{sel_scenario}** | 분석 기간: {sel_years[0]}~{sel_years[1]}년")
-st.divider()
+st.sidebar.divider()
+
+# ── 생산계획 편집 ────────────────────────────────────────────────────
+st.sidebar.markdown("#### 🚢 수주/생산 계획 조정")
+st.sidebar.caption("척수를 직접 수정하면 차트에 즉시 반영됩니다.")
+
+year_list    = list(range(sel_years[0], sel_years[1] + 1))
+prod_list    = sorted(products["product_name"].tolist())
+
+# 선택된 시나리오의 기존 계획값을 초기값으로 로드
+plan_base = plans[plans["scenario"] == sel_scenario].copy()
+plan_base = plan_base.merge(
+    products[["id", "product_name"]], left_on="product_id", right_on="id"
+)
+
+# session_state로 편집값 관리 (새로고침해도 유지)
+state_key = f"custom_plan_{sel_scenario}"
+if state_key not in st.session_state:
+    # 초기: DB 값으로 채우기
+    init_dict = {}
+    for yr in range(2025, 2031):
+        for pname in prod_list:
+            row = plan_base[
+                (plan_base["plan_year"] == yr) &
+                (plan_base["product_name"] == pname)
+            ]
+            init_dict[(yr, pname)] = float(row["planned_ships"].values[0]) if not row.empty else 0.0
+    st.session_state[state_key] = init_dict
+
+edited = st.session_state[state_key].copy()
+
+# 연도 탭으로 구분하여 선종별 척수 입력
+sidebar_year = st.sidebar.selectbox(
+    "조회/편집 연도", year_list, key="sidebar_year"
+)
+
+st.sidebar.markdown(f"**{sidebar_year}년 선종별 계획 척수**")
+
+for pname in prod_list:
+    short_name = pname[:10] + "…" if len(pname) > 10 else pname
+    val = edited.get((sidebar_year, pname), 0.0)
+    new_val = st.sidebar.number_input(
+        short_name,
+        min_value=0.0,
+        max_value=20.0,
+        value=float(val),
+        step=0.5,
+        format="%.1f",
+        key=f"plan_{sidebar_year}_{pname}",
+    )
+    edited[(sidebar_year, pname)] = new_val
+
+st.session_state[state_key] = edited
+
+# 초기화 버튼
+if st.sidebar.button("↺ 원래 계획값으로 초기화"):
+    if state_key in st.session_state:
+        del st.session_state[state_key]
+    st.rerun()
+
+st.sidebar.divider()
+
+# ── 편집값 → DataFrame 변환 (이후 탭에서 plan_filtered 대신 사용) ──
+custom_rows = []
+for (yr, pname), ships in st.session_state[state_key].items():
+    pid_row = products[products["product_name"] == pname]
+    if pid_row.empty:
+        continue
+    custom_rows.append({
+        "plan_year":     yr,
+        "product_name":  pname,
+        "product_id":    int(pid_row["id"].values[0]),
+        "planned_ships": ships,
+        "scenario":      sel_scenario,
+        "product_type":  pid_row["product_type"].values[0],
+    })
+
+custom_plans_df = pd.DataFrame(custom_rows)
+
+# 연도 범위 필터 적용
+plan_filtered = custom_plans_df[
+    custom_plans_df["plan_year"].between(*sel_years)
+].copy()
+
+# 연도별 합계 (사이드바 하단 요약)
+yearly_total = (
+    plan_filtered.groupby("plan_year")["planned_ships"]
+    .sum()
+    .reset_index()
+    .rename(columns={"planned_ships": "total_ships"})
+)
+
+st.sidebar.markdown("#### 📋 연도별 총 수주 요약")
+for _, row in yearly_total.iterrows():
+    st.sidebar.metric(
+        label=f"{int(row['plan_year'])}년",
+        value=f"{row['total_ships']:.1f} 척",
+    )
 
 # ── 탭 구성 ─────────────────────────────────────────────────────────
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -54,11 +153,6 @@ tab1, tab2, tab3, tab4 = st.tabs([
 # ── TAB 1: 제품별 생산계획 ───────────────────────────────────────────
 with tab1:
     st.subheader("제품별 연도별 수주·생산 계획")
-
-    plan_filtered = plans[
-        (plans["scenario"] == sel_scenario) &
-        (plans["plan_year"].between(*sel_years))
-    ]
 
     # 연도별 합계 계산
     yearly_total = (
