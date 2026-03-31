@@ -5,8 +5,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from supabase import create_client
 
-st.set_page_config(page_title="인력 수급 계획", page_icon="📊", layout="wide")
-
 @st.cache_resource
 def get_supabase():
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])

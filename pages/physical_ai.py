@@ -13,13 +13,6 @@ import plotly.express as px
 import plotly.graph_objects as go
 from supabase import create_client
 
-st.set_page_config(
-    page_title="Physical AI 인력 영향 분석",
-    page_icon="🤖",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 st.markdown("""
 <style>
     .block-container { padding-top: 1.5rem; }
