@@ -5,6 +5,13 @@ import plotly.express as px
 import plotly.graph_objects as go
 from supabase import create_client
 
+pg = st.navigation([
+    st.Page("app.py",                       title="인력 구조 분석",     icon="🏗️"),
+    st.Page("pages/workforce_planning.py",  title="인력 수급 계획",     icon="📊"),
+    st.Page("pages/physical_ai.py",         title="Physical AI 영향", icon="🤖"),
+])
+pg.run()
+
 st.set_page_config(
     page_title="조선소 인력 구조 분석",
     page_icon="⚓",
