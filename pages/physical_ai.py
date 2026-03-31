@@ -351,7 +351,24 @@ st.divider()
 # ══════════════════════════════════════════════════════════════════════
 st.markdown('<p class="section-header">③ 직무별 수요·공급 상세 비교</p>', unsafe_allow_html=True)
 
-sel_job = st.selectbox("직무 선택", JOB_NAMES, key="detail_job")
+# AI 적용률이 1개 연도 이상 0 초과인 직무만 필터링
+ai_applied_jobs = sorted([
+    job for job in JOB_NAMES
+    if any(
+        st.session_state[STATE_KEY].get((job, yr), 0.0) > 0
+        for yr in YEARS
+    )
+])
+
+if not ai_applied_jobs:
+    st.info("💡 AI 적용률이 입력된 직무가 없습니다. 위 ① 매트릭스에서 값을 입력하면 이 섹션이 활성화됩니다.")
+    st.stop()
+
+sel_job = st.selectbox(
+    f"직무 선택 (AI 적용률 입력된 직무만 표시 — {len(ai_applied_jobs)}개)",
+    ai_applied_jobs,
+    key="detail_job",
+)
 
 job_detail = recalc_df[recalc_df["직무"] == sel_job].sort_values("연도")
 
