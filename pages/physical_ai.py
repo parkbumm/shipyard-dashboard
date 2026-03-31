@@ -158,56 +158,81 @@ st.divider()
 # SECTION 1: 직무 × 연도 AI 적용률 매트릭스 입력
 # ══════════════════════════════════════════════════════════════════════
 st.markdown('<p class="section-header">① AI 적용률 매트릭스 입력</p>', unsafe_allow_html=True)
-st.caption("각 직무의 연도별 Physical AI 대체율(%)을 입력하세요. 입력 후 사이드바에서 💾 저장하면 DB에 반영됩니다.")
+st.caption("직무를 선택하고 연도별 Physical AI 대체율(%)을 입력하세요. 입력 후 사이드바에서 💾 저장하면 DB에 반영됩니다.")
 
-# 탭으로 연도별 분리 입력
-year_tabs = st.tabs([f"**{yr}년**" for yr in YEARS])
+input_col, preview_col = st.columns([1, 2], gap="large")
 
-for tab, yr in zip(year_tabs, YEARS):
-    with tab:
-        cols = st.columns(min(len(JOB_NAMES), 4))
-        for i, job in enumerate(JOB_NAMES):
-            col = cols[i % len(cols)]
-            short = job[:10] + "…" if len(job) > 10 else job
-            new_val = col.number_input(
-                label=short,
-                min_value=0.0,
-                max_value=100.0,
-                value=float(matrix.get((job, yr), 0.0)),
-                step=5.0,
-                format="%.1f",
-                key=f"ai_{job}_{yr}",
-                help=f"{job} — {yr}년 AI 대체율 (%)",
-            )
-            st.session_state[STATE_KEY][(job, yr)] = new_val
+with input_col:
+    sel_input_job = st.selectbox(
+        "✏️ 입력할 직무 선택",
+        JOB_NAMES,
+        key="input_job_select",
+    )
+    st.markdown(f"**{sel_input_job}** — 연도별 AI 대체율 (%)")
+    st.caption("0% = AI 미적용  /  100% = 전면 대체")
 
-# 현재 매트릭스를 DataFrame으로 시각화
-matrix_df = pd.DataFrame(
-    {yr: {job: st.session_state[STATE_KEY][(job, yr)] for job in JOB_NAMES} for yr in YEARS}
-)
-matrix_df.index.name = "직무"
+    for yr in YEARS:
+        cur = float(st.session_state[STATE_KEY].get((sel_input_job, yr), 0.0))
+        new_val = st.slider(
+            label=f"{yr}년",
+            min_value=0.0,
+            max_value=100.0,
+            value=cur,
+            step=5.0,
+            format="%.0f%%",
+            key=f"ai_{sel_input_job}_{yr}",
+        )
+        st.session_state[STATE_KEY][(sel_input_job, yr)] = new_val
 
-st.markdown("##### 현재 입력된 AI 적용률 매트릭스 (%)")
-fig_matrix = px.imshow(
-    matrix_df,
-    text_auto=".1f",
-    color_continuous_scale="Blues",
-    zmin=0, zmax=100,
-    aspect="auto",
-    labels={"color": "AI 대체율(%)"},
-    height=320,
-)
-fig_matrix.update_layout(
-    margin=dict(t=10, b=40),
-    paper_bgcolor="rgba(0,0,0,0)",
-    plot_bgcolor="rgba(0,0,0,0)",
-    coloraxis_colorbar=dict(
-        title="대체율(%)",
-        tickvals=[0, 25, 50, 75, 100],
-    ),
-)
-fig_matrix.update_xaxes(tickangle=0)
-st.plotly_chart(fig_matrix, use_container_width=True)
+    st.markdown("---")
+    rate_cols = st.columns(len(YEARS))
+    for i, yr in enumerate(YEARS):
+        rate = st.session_state[STATE_KEY][(sel_input_job, yr)]
+        rate_cols[i].metric(label=str(yr), value=f"{rate:.0f}%")
+
+with preview_col:
+    st.markdown("##### 전체 AI 적용률 현황 (%)")
+
+    matrix_df = pd.DataFrame(
+        {yr: {job: st.session_state[STATE_KEY][(job, yr)] for job in JOB_NAMES} for yr in YEARS}
+    )
+    matrix_df.index.name = "직무"
+
+    applied_count = sum(
+        1 for job in JOB_NAMES
+        if any(st.session_state[STATE_KEY][(job, yr)] > 0 for yr in YEARS)
+    )
+    st.caption(f"AI 적용률 입력 완료 직무: **{applied_count}** / {len(JOB_NAMES)}개")
+
+    fig_matrix = px.imshow(
+        matrix_df,
+        text_auto=".0f",
+        color_continuous_scale="Blues",
+        zmin=0, zmax=100,
+        aspect="auto",
+        labels={"color": "AI 대체율(%)"},
+        height=360,
+    )
+    fig_matrix.update_layout(
+        margin=dict(t=10, b=40),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        coloraxis_colorbar=dict(
+            title="대체율(%)",
+            tickvals=[0, 25, 50, 75, 100],
+        ),
+    )
+    fig_matrix.update_xaxes(tickangle=0)
+    if sel_input_job in list(matrix_df.index):
+        row_idx = list(matrix_df.index).index(sel_input_job)
+        fig_matrix.add_shape(
+            type="rect",
+            x0=-0.5, x1=len(YEARS) - 0.5,
+            y0=row_idx - 0.5, y1=row_idx + 0.5,
+            line=dict(color="#00d4ff", width=2),
+            fillcolor="rgba(0,212,255,0.06)",
+        )
+    st.plotly_chart(fig_matrix, use_container_width=True)
 
 st.divider()
 
