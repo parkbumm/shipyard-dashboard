@@ -5,6 +5,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 from supabase import create_client
 
+st.set_page_config(page_title="인력 수급 계획", page_icon="📊", layout="wide")
+
 @st.cache_resource
 def get_supabase():
     return create_client(st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"])
@@ -425,7 +427,32 @@ with tab3:
 with tab4:
     st.subheader("직무별 인력 수요·공급 비교 (연도별 추이)")
 
-    sel_job = st.selectbox("직무 선택", sorted(jobs["job_name"].tolist()))
+    # 수요·공급 데이터가 모두 존재하는 직무만 필터링
+    jobs_with_demand = set(
+        demand[
+            (demand["scenario"] == sel_scenario) &
+            (demand["plan_year"].between(*sel_years)) &
+            (demand["required_headcount"] > 0)
+        ]["job_name"].tolist()
+    )
+    jobs_with_supply = set(
+        jobs[jobs["id"].isin(
+            supply[
+                (supply["supply_year"].between(*sel_years)) &
+                (supply["net_supply"] > 0)
+            ]["job_id"].tolist()
+        )]["job_name"].tolist()
+    )
+    active_jobs = sorted(jobs_with_demand & jobs_with_supply)
+
+    if not active_jobs:
+        st.info("선택한 연도 범위 내 수요·공급 데이터가 모두 존재하는 직무가 없습니다.")
+        st.stop()
+
+    sel_job = st.selectbox(
+        f"직무 선택 (수요·공급 데이터 보유 직무 — {len(active_jobs)}개)",
+        active_jobs,
+    )
     job_id  = int(jobs[jobs["job_name"] == sel_job]["id"].values[0])
 
     dem_j = demand[
